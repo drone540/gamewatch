@@ -49,6 +49,8 @@ jobs:
             -o dist/gamewatch-windows-arm64.exe .
 
       - name: Package release ZIP
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist/gamewatch
 
@@ -58,13 +60,14 @@ jobs:
           cp gamewatch.example.json dist/gamewatch/gamewatch.json
           cp README.md dist/gamewatch/
 
-          cd dist
-          zip -r gamewatch-windows.zip gamewatch
+          cd dist/gamewatch
+          zip -r "../gamewatch-${VERSION}-windows.zip" .
+          cd ../..
 
-          unzip -l gamewatch-windows.zip
+          unzip -l "dist/gamewatch-${VERSION}-windows.zip"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/gamewatch-windows.zip
+          files: dist/gamewatch-${{ github.ref_name }}-windows.zip
