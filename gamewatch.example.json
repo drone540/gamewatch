@@ -1,0 +1,24 @@
+{
+  "pollSeconds": 5,
+  "startDelaySeconds": 10,
+  "stopDelaySeconds": 20,
+  "libraryRefreshMinutes": 60,
+  "steam": true,
+  "epic": true,
+  "gog": true,
+  "ubisoft": true,
+  "detectUnknownFullscreen": false,
+  "ignoredExecutables": [],
+  "ignoredGames": [],
+  "games": [
+    {
+      "name": "Example Non-Steam Game",
+      "installDir": "D:\\Games\\Example Game"
+    },
+    {
+      "name": "Example Java Game",
+      "executables": ["javaw.exe"],
+      "matchWindowTitle": "Example Launcher"
+    }
+  ]
+}
