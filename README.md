@@ -196,12 +196,19 @@ changes which process paths are readable.
 
 ## Credits
 
-The approach was informed by the example projects in this repository:
+The approach was informed by these open-source projects:
 
-- **GameDetect** - process polling, D3D fullscreen and foreground-window
-  detection.
-- **GameDetector** (OBS plugin) - Steam/Epic/GOG/Ubisoft library discovery.
-- **PlayCounter** - launcher manifest parsing and path-based game identity.
+- [**GameDetect**](https://github.com/opkelde/GameDetect) - Windows game
+  detection and Home Assistant status publishing; process polling, D3D
+  fullscreen, and foreground-window detection.
+- [**GameDetector**](https://github.com/FabioZumbi12/game-detector) - OBS plugin
+  for detecting Steam/Epic games; launcher library discovery and game identity.
+- [**PlayCounter**](https://github.com/zntr1/PlayCounter) - launcher-agnostic
+  playtime tracker; process scanning, launcher manifest parsing, and
+  path-based game identity.
+- [**Gaming-Status**](https://github.com/adamjthompson/Gaming-Status) - Home
+  Assistant integration for aggregated gaming status; session tracking and
+  event reporting.
 
-No code is shared at runtime; these are independent implementations of the same
-public Windows APIs and launcher file formats.
+`gamewatch` is an independent implementation and shares no code with these
+projects. It uses the same public Windows APIs and launcher file formats.
