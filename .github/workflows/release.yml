@@ -28,6 +28,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Verify release files
+        run: |
+          test -f games.json
+          test -f gamewatch.example.json
+          test -f README.md
+          python3 -m json.tool games.json > /dev/null
+          python3 -m json.tool gamewatch.example.json > /dev/null
+
       - name: Build Windows executables
         run: |
           mkdir -p dist
@@ -40,8 +48,23 @@ jobs:
             -trimpath -ldflags="-s -w" \
             -o dist/gamewatch-windows-arm64.exe .
 
+      - name: Package release ZIP
+        run: |
+          mkdir -p dist/gamewatch
+
+          cp dist/gamewatch-windows-amd64.exe dist/gamewatch/
+          cp dist/gamewatch-windows-arm64.exe dist/gamewatch/
+          cp games.json dist/gamewatch/
+          cp gamewatch.example.json dist/gamewatch/gamewatch.json
+          cp README.md dist/gamewatch/
+
+          cd dist
+          zip -r gamewatch-windows.zip gamewatch
+
+          unzip -l gamewatch-windows.zip
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/*.exe
+          files: dist/gamewatch-windows.zip
