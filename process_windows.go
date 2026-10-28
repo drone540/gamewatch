@@ -122,8 +122,122 @@ func processDetails(pid uint32) (string, time.Time) {
 	return path, started
 }
 
+// windowScanState is shared between scanWindows and enumWindowsCallbackProc.
+// EnumWindows invokes the callback synchronously, so only one scan can be
+// active at a time; windowScanMu enforces that.
+type windowScanState struct {
+	foreground uintptr
+	result     map[uint32]WindowInfo
+}
+
+var (
+	windowScanMu            sync.Mutex
+	activeWindowScan        *windowScanState
+	enumWindowsCallbackOnce = new(sync.Once)
+	enumWindowsCallbackAddr uintptr
+
+	// Kept as a variable so the Windows regression test can count callback
+	// registrations.
+	newWindowsCallback = windows.NewCallback
+)
+
+// enumWindowsCallbackPtr creates the callback exactly once. Creating a Go
+// callback for every scan (for example with an inline closure) exhausts the
+// Windows runtime's callback table after a few thousand scans.
+func enumWindowsCallbackPtr() uintptr {
+	enumWindowsCallbackOnce.Do(func() {
+		enumWindowsCallbackAddr = newWindowsCallback(enumWindowsCallbackProc)
+	})
+	return enumWindowsCallbackAddr
+}
+
+func enumWindowsCallbackProc(hwnd uintptr, _ uintptr) uintptr {
+	scan := activeWindowScan
+	if scan == nil {
+		return 1
+	}
+
+	if visible, _, _ := procIsWindowVisible.Call(hwnd); visible == 0 {
+		return 1
+	}
+	if length, _, _ := procGetWindowTextLengthW.Call(hwnd); length == 0 {
+		return 1
+	}
+	style, _, _ := procGetWindowLongW.Call(hwnd, gwlExStyle)
+	if style&wsExToolWindow != 0 {
+		return 1
+	}
+
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return 1
+	}
+
+	var text [512]uint16
+	n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&text[0])), uintptr(len(text)))
+	if n == 0 {
+		return 1
+	}
+	title := windows.UTF16ToString(text[:n])
+
+	var bounds rect
+	if ok, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds))); ok == 0 {
+		return 1
+	}
+	width := int(bounds.Right - bounds.Left)
+	height := int(bounds.Bottom - bounds.Top)
+	if width <= 0 || height <= 0 {
+		return 1
+	}
+
+	fullscreen := false
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic == 0 {
+		monitor, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultNear)
+		if monitor != 0 {
+			var info monitorInfo
+			info.CbSize = uint32(unsafe.Sizeof(info))
+			if ok, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
+				const tolerance = 2
+				fullscreen = bounds.Left <= info.RcMonitor.Left+tolerance &&
+					bounds.Top <= info.RcMonitor.Top+tolerance &&
+					bounds.Right >= info.RcMonitor.Right-tolerance &&
+					bounds.Bottom >= info.RcMonitor.Bottom-tolerance
+			}
+		}
+	}
+
+	isForeground := hwnd == scan.foreground
+	current, exists := scan.result[pid]
+	area := width * height
+	replaceTitle := !exists || isForeground || fullscreen ||
+		area > current.Width*current.Height
+	if !exists {
+		scan.result[pid] = WindowInfo{
+			Title:      title,
+			Visible:    true,
+			Foreground: isForeground,
+			Fullscreen: fullscreen,
+			Width:      width,
+			Height:     height,
+		}
+		return 1
+	}
+	if replaceTitle {
+		current.Title = title
+		current.Width = width
+		current.Height = height
+	}
+	current.Foreground = current.Foreground || isForeground
+	current.Fullscreen = current.Fullscreen || fullscreen
+	current.Visible = true
+	scan.result[pid] = current
+	return 1
+}
+
 func scanWindows() (map[uint32]WindowInfo, uint32, bool) {
-	result := make(map[uint32]WindowInfo)
+	windowScanMu.Lock()
+	defer windowScanMu.Unlock()
 
 	foreground, _, _ := procGetForegroundWindow.Call()
 	var foregroundPID uint32
@@ -131,92 +245,22 @@ func scanWindows() (map[uint32]WindowInfo, uint32, bool) {
 		procGetWindowThreadProcessId.Call(foreground, uintptr(unsafe.Pointer(&foregroundPID)))
 	}
 
-	callback := windows.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if visible, _, _ := procIsWindowVisible.Call(hwnd); visible == 0 {
-			return 1
-		}
-		if length, _, _ := procGetWindowTextLengthW.Call(hwnd); length == 0 {
-			return 1
-		}
-		style, _, _ := procGetWindowLongW.Call(hwnd, gwlExStyle)
-		if style&wsExToolWindow != 0 {
-			return 1
-		}
+	scan := &windowScanState{
+		foreground: foreground,
+		result:     make(map[uint32]WindowInfo),
+	}
+	activeWindowScan = scan
+	defer func() {
+		activeWindowScan = nil
+	}()
 
-		var pid uint32
-		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-		if pid == 0 {
-			return 1
-		}
-
-		var text [512]uint16
-		n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&text[0])), uintptr(len(text)))
-		if n == 0 {
-			return 1
-		}
-		title := windows.UTF16ToString(text[:n])
-
-		var bounds rect
-		if ok, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds))); ok == 0 {
-			return 1
-		}
-		width := int(bounds.Right - bounds.Left)
-		height := int(bounds.Bottom - bounds.Top)
-		if width <= 0 || height <= 0 {
-			return 1
-		}
-
-		fullscreen := false
-		if iconic, _, _ := procIsIconic.Call(hwnd); iconic == 0 {
-			monitor, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultNear)
-			if monitor != 0 {
-				var info monitorInfo
-				info.CbSize = uint32(unsafe.Sizeof(info))
-				if ok, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
-					const tolerance = 2
-					fullscreen = bounds.Left <= info.RcMonitor.Left+tolerance &&
-						bounds.Top <= info.RcMonitor.Top+tolerance &&
-						bounds.Right >= info.RcMonitor.Right-tolerance &&
-						bounds.Bottom >= info.RcMonitor.Bottom-tolerance
-				}
-			}
-		}
-
-		isForeground := hwnd == foreground
-		current, exists := result[pid]
-		area := width * height
-		replaceTitle := !exists || isForeground || fullscreen ||
-			area > current.Width*current.Height
-		if !exists {
-			result[pid] = WindowInfo{
-				Title:      title,
-				Visible:    true,
-				Foreground: isForeground,
-				Fullscreen: fullscreen,
-				Width:      width,
-				Height:     height,
-			}
-			return 1
-		}
-		if replaceTitle {
-			current.Title = title
-			current.Width = width
-			current.Height = height
-		}
-		current.Foreground = current.Foreground || isForeground
-		current.Fullscreen = current.Fullscreen || fullscreen
-		current.Visible = true
-		result[pid] = current
-		return 1
-	})
-
-	_, _, _ = procEnumWindows.Call(callback, 0)
+	_, _, _ = procEnumWindows.Call(enumWindowsCallbackPtr(), 0)
 
 	var notificationState int32
 	hr, _, _ := procSHQueryUserNotificationState.Call(uintptr(unsafe.Pointer(&notificationState)))
 	d3dFullscreen := hr == 0 && notificationState == qunsRunningD3DFullscreen
 
-	return result, foregroundPID, d3dFullscreen
+	return scan.result, foregroundPID, d3dFullscreen
 }
 
 type rect struct {
