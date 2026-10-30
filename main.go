@@ -31,7 +31,7 @@ func main() {
 	flag.BoolVar(&once, "once", false, "scan once, print the result and exit (0 = game, 1 = no game)")
 	flag.BoolVar(&verbose, "verbose", false, "log detection candidates and library details")
 	flag.StringVar(&listen, "listen", "", "serve status at this address, e.g. 127.0.0.1:8732")
-	flag.StringVar(&webhook, "webhook", "", "POST every game_started/game_stopped event to this URL")
+	flag.StringVar(&webhook, "webhook", "", "POST every event (game/gaming started/stopped) to this URL")
 	flag.StringVar(&statusFile, "status-file", "", "write the current status to this JSON file on every poll")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()

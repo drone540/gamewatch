@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,12 +28,13 @@ type Agent struct {
 	webhook      string
 	statusFile   string
 	client       *http.Client
+	eventQueue   chan Event
 	lastWriteErr string
 }
 
 func NewAgent(cfg Config, detector *Detector, jsonOut bool, webhook, statusFile string) *Agent {
 	now := time.Now()
-	return &Agent{
+	agent := &Agent{
 		cfg:        cfg,
 		tracker:    NewTracker(time.Duration(cfg.StartDelaySeconds)*time.Second, time.Duration(cfg.StopDelaySeconds)*time.Second),
 		detector:   detector,
@@ -42,6 +44,11 @@ func NewAgent(cfg Config, detector *Detector, jsonOut bool, webhook, statusFile 
 		statusFile: statusFile,
 		client:     &http.Client{Timeout: 5 * time.Second},
 	}
+	if webhook != "" || cfg.Hooks.configured() {
+		agent.eventQueue = make(chan Event, 64)
+		go agent.eventWorker()
+	}
+	return agent
 }
 
 func (a *Agent) Run(ctx context.Context) {
@@ -64,7 +71,7 @@ func (a *Agent) Run(ctx context.Context) {
 }
 
 func (a *Agent) Tick(now time.Time) {
-	detected, err := a.detector.Detect(now)
+	detected, err := a.detector.DetectAll(now)
 	if err != nil {
 		log.Printf("detect: %v", err)
 		a.mu.Lock()
@@ -72,7 +79,7 @@ func (a *Agent) Tick(now time.Time) {
 		a.mu.Unlock()
 		return
 	}
-	events := a.tracker.Update(now, detected)
+	events := a.tracker.UpdateAll(now, detected)
 
 	status := a.tracker.Status(now)
 	a.mu.Lock()
@@ -86,12 +93,12 @@ func (a *Agent) Tick(now time.Time) {
 }
 
 func (a *Agent) Once(now time.Time) (Status, error) {
-	detected, err := a.detector.Detect(now)
+	detected, err := a.detector.DetectAll(now)
 	if err != nil {
 		return Status{}, err
 	}
 	tracker := NewTracker(0, 0)
-	tracker.Update(now, detected)
+	tracker.UpdateAll(now, detected)
 	return tracker.Status(now), nil
 }
 
@@ -119,8 +126,19 @@ func (a *Agent) emit(event Event) {
 	} else {
 		fmt.Println(formatEvent(event))
 	}
-	if a.webhook != "" {
-		go a.postEvent(event)
+	if a.eventQueue != nil {
+		a.eventQueue <- event
+	}
+}
+
+// eventWorker serializes webhooks and hooks so automation sees events in the
+// same order they were emitted, without blocking the detection loop.
+func (a *Agent) eventWorker() {
+	for event := range a.eventQueue {
+		if a.webhook != "" {
+			a.postEvent(event)
+		}
+		a.runHook(event)
 	}
 }
 
@@ -198,18 +216,44 @@ func formatEvent(event Event) string {
 		if event.Game != nil {
 			name = event.Game.Name
 		}
-		return fmt.Sprintf("[%s] game stopped: %s after %s",
+		line := fmt.Sprintf("[%s] game stopped: %s after %s",
 			stamp, name, formatDuration(event.DurationSeconds))
+		if event.Status.Gaming && event.Status.Game != nil {
+			line += fmt.Sprintf(" (still gaming: %s)", event.Status.Game.Name)
+		}
+		return line
+	case "gaming_started":
+		if event.Status.Game == nil {
+			return fmt.Sprintf("[%s] gaming started", stamp)
+		}
+		return fmt.Sprintf("[%s] gaming started: %s%s", stamp, event.Status.Game.Name, gameSuffix(event.Status.Game))
+	case "gaming_stopped":
+		return fmt.Sprintf("[%s] gaming stopped after %s", stamp, formatDuration(event.DurationSeconds))
 	default:
 		return fmt.Sprintf("[%s] %s", stamp, event.Event)
 	}
 }
 
 func formatStatus(status Status) string {
-	if !status.Gaming || status.Game == nil {
+	if !status.Gaming {
 		return "not gaming"
 	}
-	return fmt.Sprintf("gaming: %s%s", status.Game.Name, gameSuffix(status.Game))
+	games := status.Games
+	if len(games) == 0 && status.Game != nil {
+		games = []*Game{status.Game}
+	}
+	if len(games) == 0 {
+		return "not gaming"
+	}
+	if len(games) == 1 {
+		return fmt.Sprintf("gaming: %s%s", games[0].Name, gameSuffix(games[0]))
+	}
+
+	parts := make([]string, 0, len(games))
+	for _, game := range games {
+		parts = append(parts, game.Name+gameSuffix(game))
+	}
+	return fmt.Sprintf("gaming (%d): %s", len(games), strings.Join(parts, "; "))
 }
 
 func gameSuffix(game *Game) string {

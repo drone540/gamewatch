@@ -133,8 +133,9 @@ func (d *Detector) RefreshLibraries(force bool) {
 		counts["steam"], counts["epic"], counts["gog"], counts["ubisoft"])
 }
 
-// Detect scans processes once and returns the best current game, or nil.
-func (d *Detector) Detect(now time.Time) (*Game, error) {
+// DetectAll scans processes once and returns every current game, ordered with
+// the foreground/fullscreen game first.
+func (d *Detector) DetectAll(now time.Time) ([]*Game, error) {
 	interval := time.Duration(d.cfg.LibraryRefreshMinutes) * time.Minute
 	if d.lastRefresh.IsZero() || now.Sub(d.lastRefresh) >= interval {
 		d.RefreshLibraries(true)
@@ -234,6 +235,15 @@ func (d *Detector) Detect(now time.Time) (*Game, error) {
 
 	if d.verbose {
 		log.Printf("detect: %s", formatCandidates(matches))
+	}
+	return matches, nil
+}
+
+// Detect returns only the primary current game, or nil.
+func (d *Detector) Detect(now time.Time) (*Game, error) {
+	matches, err := d.DetectAll(now)
+	if err != nil || len(matches) == 0 {
+		return nil, err
 	}
 	return matches[0], nil
 }

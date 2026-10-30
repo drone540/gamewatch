@@ -43,22 +43,27 @@ func TestTrackerStartAndStopDelay(t *testing.T) {
 	}{
 		{0, a, 0},
 		{1 * time.Second, a, 0},
-		{2 * time.Second, a, 1}, // start after 2 seconds
+		{2 * time.Second, a, 2}, // game_started, gaming_started
 		{3 * time.Second, nil, 0},
 		{7 * time.Second, nil, 0},
-		{8 * time.Second, nil, 1}, // stop 5 seconds after last seen
+		{8 * time.Second, nil, 2}, // game_stopped, gaming_stopped
 	}
 	for i, step := range steps {
 		events := tracker.Update(start.Add(step.offset), step.game)
 		if len(events) != step.events {
 			t.Fatalf("step %d: got %d events, want %d: %+v", i, len(events), step.events, events)
 		}
-		if step.events == 1 && i == 5 {
-			if events[0].Event != "game_stopped" {
-				t.Fatalf("event = %q", events[0].Event)
+		switch i {
+		case 2:
+			if events[0].Event != "game_started" || events[1].Event != "gaming_started" {
+				t.Fatalf("start event order = %+v", events)
 			}
-			if events[0].DurationSeconds != 6 {
-				t.Fatalf("duration = %d, want 6", events[0].DurationSeconds)
+		case 5:
+			if events[0].Event != "game_stopped" || events[0].DurationSeconds != 6 {
+				t.Fatalf("stop event = %+v", events[0])
+			}
+			if events[1].Event != "gaming_stopped" || events[1].DurationSeconds != 6 {
+				t.Fatalf("mode stop event = %+v", events[1])
 			}
 		}
 	}
@@ -76,14 +81,76 @@ func TestTrackerSwitch(t *testing.T) {
 		t.Fatalf("B should still be pending: %+v", events)
 	}
 	events = tracker.Update(start.Add(5*time.Second), game("B"))
+	if len(events) != 1 || events[0].Event != "game_started" || events[0].Game.Name != "B" {
+		t.Fatalf("B start event = %+v", events)
+	}
+	if !events[0].Status.Gaming || len(events[0].Status.Games) != 2 {
+		t.Fatalf("A should still be active while B starts: %+v", events[0].Status)
+	}
+
+	// A has not been seen since 12:00:02, so it stops after the 10s delay.
+	events = tracker.Update(start.Add(13*time.Second), game("B"))
+	if len(events) != 1 || events[0].Event != "game_stopped" || events[0].Game.Name != "A" {
+		t.Fatalf("A stop event = %+v", events)
+	}
+	if !events[0].Status.Gaming || events[0].Status.Game.Name != "B" {
+		t.Fatalf("gaming should continue with B: %+v", events[0].Status)
+	}
+}
+
+func TestTrackerKeepsGamingWithMultipleGames(t *testing.T) {
+	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker := NewTracker(0, 5*time.Second)
+	a, b := game("A"), game("B")
+
+	events := tracker.UpdateAll(start, []*Game{a, b})
+	if len(events) != 3 {
+		t.Fatalf("initial events = %+v", events)
+	}
+	if events[0].Event != "game_started" || events[0].Game.Name != "A" ||
+		events[1].Event != "game_started" || events[1].Game.Name != "B" ||
+		events[2].Event != "gaming_started" {
+		t.Fatalf("initial event order = %+v", events)
+	}
+	if len(events[2].Status.Games) != 2 {
+		t.Fatalf("gaming_started should include both games: %+v", events[2].Status)
+	}
+
+	status := tracker.Status(start.Add(time.Second))
+	if !status.Gaming || len(status.Games) != 2 || status.Game.Name != "A" {
+		t.Fatalf("both games should be active: %+v", status)
+	}
+
+	// Close A but keep B running. The primary game switches to B, but gaming
+	// mode must stay active.
+	events = tracker.UpdateAll(start.Add(time.Second), []*Game{b})
+	if len(events) != 0 {
+		t.Fatalf("events while A is within stop delay: %+v", events)
+	}
+	status = tracker.Status(start.Add(time.Second))
+	if !status.Gaming || len(status.Games) != 2 || status.Game.Name != "B" {
+		t.Fatalf("B should be primary while A is still tracked: %+v", status)
+	}
+
+	events = tracker.UpdateAll(start.Add(7*time.Second), []*Game{b})
+	if len(events) != 1 || events[0].Event != "game_stopped" || events[0].Game.Name != "A" {
+		t.Fatalf("A stop event = %+v", events)
+	}
+	if !events[0].Status.Gaming {
+		t.Fatalf("gaming stopped while B is still running: %+v", events[0].Status)
+	}
+
+	events = tracker.UpdateAll(start.Add(13*time.Second), nil)
 	if len(events) != 2 {
-		t.Fatalf("got %d events, want 2: %+v", len(events), events)
+		t.Fatalf("final events = %+v", events)
 	}
-	if events[0].Event != "game_stopped" || events[0].Game.Name != "A" {
-		t.Fatalf("first event = %+v", events[0])
+	if events[0].Event != "game_stopped" || events[0].Game.Name != "B" ||
+		events[1].Event != "gaming_stopped" {
+		t.Fatalf("final event order = %+v", events)
 	}
-	if events[1].Event != "game_started" || events[1].Game.Name != "B" {
-		t.Fatalf("second event = %+v", events[1])
+	status = tracker.Status(start.Add(13 * time.Second))
+	if status.Gaming || status.Game != nil || status.Games != nil || status.Since != nil {
+		t.Fatalf("status after last game stopped = %+v", status)
 	}
 }
 

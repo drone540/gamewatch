@@ -14,7 +14,11 @@ It combines four passive signals:
    Steam's `RunningAppID` fallback.
 
 State changes are debounced, so a launcher flash or a quick alt-tab does not
-produce start/stop spam.
+produce start/stop spam. All running games are tracked at once: closing one game
+does not end gaming mode while another is still active.
+
+Events are emitted when gaming mode starts/stops and when each individual game
+starts/stops. Each event can run a shell command or be POSTed to a webhook.
 
 ## Build
 
@@ -44,7 +48,11 @@ Default output is human-readable on stdout; logs go to stderr:
 12:34:56 library: steam=84 epic=6 gog=3 ubisoft=1
 12:34:56 watching: poll=5s startDelay=10s stopDelay=20s
 12:37:41 game started: ELDEN RING (steam 1245620, eldenring.exe, foreground, fullscreen)
-13:10:02 game stopped: ELDEN RING after 32m21s
+12:37:41 gaming started: ELDEN RING (steam 1245620, eldenring.exe, foreground, fullscreen)
+13:10:02 game started: Fortnite (epic, FortniteClient-Win64-Shipping.exe, fullscreen)
+13:25:00 game stopped: ELDEN RING after 47m19s (still gaming: Fortnite)
+13:40:00 game stopped: Fortnite after 29m58s
+13:40:00 gaming stopped after 1h2m19s
 ```
 
 Use `-json` for one JSON event per line:
@@ -54,7 +62,7 @@ gamewatch.exe -json
 ```
 
 ```json
-{"event":"game_started","at":"2026-10-27T12:37:41Z","game":{"name":"ELDEN RING","source":"steam","appId":"1245620","exe":"eldenring.exe","pid":1234,"fullscreen":true,"foreground":true},"status":{"gaming":true,"durationSeconds":0}}
+{"event":"game_started","at":"2026-10-27T12:37:41Z","game":{"name":"ELDEN RING","source":"steam","appId":"1245620","exe":"eldenring.exe","pid":1234,"fullscreen":true,"foreground":true},"status":{"gaming":true,"game":{"name":"ELDEN RING","source":"steam","appId":"1245620","exe":"eldenring.exe","pid":1234,"fullscreen":true,"foreground":true},"games":[{"name":"ELDEN RING","source":"steam","appId":"1245620","exe":"eldenring.exe","pid":1234,"fullscreen":true,"foreground":true}],"since":"2026-10-27T12:37:41Z","durationSeconds":0,"checkedAt":"2026-10-27T12:37:41Z"}}
 ```
 
 Check once and use the exit code in a script:
@@ -75,7 +83,7 @@ if %ERRORLEVEL% EQU 0 echo A game is running
 | `-once` | Scan once, print status, exit. |
 | `-verbose` | Log candidate processes and library warnings. |
 | `-listen ADDR` | Serve `GET /status` and `GET /healthz`, e.g. `127.0.0.1:8732`. |
-| `-webhook URL` | POST each `game_started` / `game_stopped` event as JSON. |
+| `-webhook URL` | POST every `game_started`, `game_stopped`, `gaming_started`, and `gaming_stopped` event as JSON. |
 | `-status-file PATH` | Atomically write the current status JSON on every poll. |
 | `-version` | Print version and exit. |
 
@@ -90,22 +98,43 @@ curl http://127.0.0.1:8732/status?pretty=1
 {
   "gaming": true,
   "game": {
-    "name": "ELDEN RING",
-    "source": "steam",
-    "appId": "1245620",
-    "exe": "eldenring.exe",
-    "pid": 1234,
-    "path": "D:\\SteamLibrary\\steamapps\\common\\ELDEN RING\\Game\\eldenring.exe",
-    "title": "ELDEN RING",
-    "startedAt": "2026-10-27T12:36:10Z",
+    "name": "Fortnite",
+    "source": "epic",
+    "exe": "FortniteClient-Win64-Shipping.exe",
+    "pid": 5678,
+    "path": "D:\\Epic\\Fortnite\\FortniteGame\\Binaries\\Win64\\FortniteClient-Win64-Shipping.exe",
+    "title": "Fortnite",
+    "startedAt": "2026-10-27T12:39:55Z",
     "fullscreen": true,
     "foreground": true
   },
+  "games": [
+    {
+      "name": "Fortnite",
+      "source": "epic",
+      "exe": "FortniteClient-Win64-Shipping.exe",
+      "pid": 5678,
+      "fullscreen": true,
+      "foreground": true
+    },
+    {
+      "name": "ELDEN RING",
+      "source": "steam",
+      "appId": "1245620",
+      "exe": "eldenring.exe",
+      "pid": 1234,
+      "fullscreen": false,
+      "foreground": false
+    }
+  ],
   "since": "2026-10-27T12:37:41Z",
   "durationSeconds": 141,
   "checkedAt": "2026-10-27T12:40:02Z"
 }
 ```
+
+`game` is the primary game (foreground/fullscreen first), while `games` lists
+every game currently being tracked.
 
 The server only binds to the address you pass. Use `127.0.0.1` unless you want
 other machines on your network to read it.
@@ -121,6 +150,7 @@ pass `-config`). Fields omitted from the file keep their defaults.
   "startDelaySeconds": 10,
   "stopDelaySeconds": 20,
   "libraryRefreshMinutes": 60,
+  "hookTimeoutSeconds": 30,
   "steam": true,
   "epic": true,
   "gog": true,
@@ -128,6 +158,12 @@ pass `-config`). Fields omitted from the file keep their defaults.
   "detectUnknownFullscreen": false,
   "ignoredExecutables": [],
   "ignoredGames": [],
+  "hooks": {
+    "gamingStarted": "C:\\Scripts\\gaming-on.cmd",
+    "gameStarted": "python C:\\Scripts\\discord_game.py",
+    "gameStopped": "",
+    "gamingStopped": "C:\\Scripts\\gaming-off.cmd"
+  },
   "games": [
     {
       "name": "My Game",
@@ -157,6 +193,80 @@ Custom game matching rules:
 installers, launchers) that live inside a game folder. `ignoredGames` suppresses
 a whole game by name.
 
+### Events
+
+| Event | When it is emitted |
+| --- | --- |
+| `game_started` | A game has been detected for `startDelaySeconds`. |
+| `game_stopped` | A tracked game has not been seen for `stopDelaySeconds`. |
+| `gaming_started` | The first game starts; emitted after the poll's `game_started` events. |
+| `gaming_stopped` | The last game stops; emitted after the final `game_stopped`. |
+
+`status.gaming` is `true` while at least one game is active. With two games
+running, closing one emits `game_stopped` but leaves `gaming` true; closing the
+second emits `game_stopped` followed by `gaming_stopped`.
+
+Game events include a `game` object. Gaming-mode events do not, because more
+than one game may be active; use `status.games` in the event to see the full
+list.
+
+### Hooks
+
+Each hook is a command line run by the platform shell (`cmd.exe /C` on Windows).
+Hooks run asynchronously in event order, so a slow script does not block
+detection. Output goes to gamewatch's stderr, keeping `-json` output clean.
+
+```json
+"hooks": {
+  "gamingStarted": "curl -s -X POST http://127.0.0.1:8123/api/services/script/gaming_on",
+  "gameStarted": "python C:\\Scripts\\discord_game.py",
+  "gameStopped": "",
+  "gamingStopped": "curl -s -X POST http://127.0.0.1:8123/api/services/script/gaming_off"
+}
+```
+
+- `gamingStarted` / `gamingStopped` run when `status.gaming` becomes true/false.
+- `gameStarted` / `gameStopped` run for each individual game.
+- `hookTimeoutSeconds` (default `30`) kills a hook that runs too long.
+- An empty command disables that hook.
+- Commands run in the same working directory as gamewatch.
+
+The complete event is written as JSON to the hook's stdin, so a Python script
+can do:
+
+```python
+import json
+import sys
+
+event = json.load(sys.stdin)
+print(event["event"], file=sys.stderr)
+if event.get("game"):
+    print(event["game"]["name"], file=sys.stderr)
+print(event["status"]["games"], file=sys.stderr)
+```
+
+The same fields are available as environment variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `GAMEWATCH_EVENT` | Event name, for example `game_started`. |
+| `GAMEWATCH_GAMING` | `true` or `false`. |
+| `GAMEWATCH_GAME_COUNT` | Number of active games. |
+| `GAMEWATCH_GAME_NAME` | Event game name. For mode events, the primary game. |
+| `GAMEWATCH_GAME_SOURCE` | `steam`, `epic`, `gog`, `ubisoft`, `known`, `custom`, or `unknown`. |
+| `GAMEWATCH_GAME_APPID` | Launcher app ID, when known. |
+| `GAMEWATCH_GAME_EXE` | Executable name. |
+| `GAMEWATCH_GAME_PID` | Process ID. |
+| `GAMEWATCH_GAME_PATH` | Full executable path. |
+| `GAMEWATCH_GAME_TITLE` | Window title. |
+| `GAMEWATCH_GAME_FULLSCREEN` | `true` or `false`. |
+| `GAMEWATCH_GAME_FOREGROUND` | `true` or `false`. |
+| `GAMEWATCH_DURATION_SECONDS` | Event duration for stop events. |
+| `GAMEWATCH_AT` | Event timestamp in RFC 3339 format. |
+
+`-webhook URL` sends the same event JSON to an HTTP endpoint instead of, or in
+addition to, local hooks.
+
 ### Unknown fullscreen apps
 
 Set `"detectUnknownFullscreen": true` to report any foreground fullscreen app
@@ -180,9 +290,14 @@ changes which process paths are readable.
 
 - A game is counted when a matched process has a visible top-level window. A
   minimized game still counts; a game that has fully exited does not.
-- Foreground and fullscreen are included in events and used to pick between
-  multiple running games. A game does not have to be fullscreen to count, which
-  supports windowed play.
+- All matched games are tracked at the same time. Closing one game does not end
+  gaming mode while another game is still active.
+- The start and stop delays apply per game. Gaming mode starts after the first
+  game passes its start delay and stops after the last game passes its stop
+  delay.
+- Foreground and fullscreen are included in events and used to pick the primary
+  game when several are running. A game does not have to be fullscreen to count,
+  which supports windowed play.
 - Steam `RunningAppID` is used only when no process match was found and
   `steam.exe` is running. This helps when the game process is elevated and its
   path cannot be read.

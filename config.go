@@ -18,6 +18,20 @@ type CustomGame struct {
 	MatchWindowTitle string   `json:"matchWindowTitle,omitempty"`
 }
 
+// Hooks are shell commands run when a tracked event occurs. Commands run
+// asynchronously so a slow script does not block game detection.
+type Hooks struct {
+	GamingStarted string `json:"gamingStarted,omitempty"`
+	GameStarted   string `json:"gameStarted,omitempty"`
+	GameStopped   string `json:"gameStopped,omitempty"`
+	GamingStopped string `json:"gamingStopped,omitempty"`
+}
+
+func (h Hooks) configured() bool {
+	return h.GamingStarted != "" || h.GameStarted != "" ||
+		h.GameStopped != "" || h.GamingStopped != ""
+}
+
 // Config controls detection and output. Defaults are applied before the JSON
 // file is decoded, so omitted fields keep their default values.
 type Config struct {
@@ -25,6 +39,7 @@ type Config struct {
 	StartDelaySeconds       int          `json:"startDelaySeconds"`
 	StopDelaySeconds        int          `json:"stopDelaySeconds"`
 	LibraryRefreshMinutes   int          `json:"libraryRefreshMinutes"`
+	HookTimeoutSeconds      int          `json:"hookTimeoutSeconds"`
 	Steam                   bool         `json:"steam"`
 	Epic                    bool         `json:"epic"`
 	GOG                     bool         `json:"gog"`
@@ -32,6 +47,7 @@ type Config struct {
 	DetectUnknownFullscreen bool         `json:"detectUnknownFullscreen"`
 	IgnoredExecutables      []string     `json:"ignoredExecutables,omitempty"`
 	IgnoredGames            []string     `json:"ignoredGames,omitempty"`
+	Hooks                   Hooks        `json:"hooks,omitempty"`
 	Games                   []CustomGame `json:"games,omitempty"`
 }
 
@@ -41,6 +57,7 @@ func DefaultConfig() Config {
 		StartDelaySeconds:     10,
 		StopDelaySeconds:      20,
 		LibraryRefreshMinutes: 60,
+		HookTimeoutSeconds:    30,
 		Steam:                 true,
 		Epic:                  true,
 		GOG:                   true,
@@ -113,6 +130,13 @@ func (c *Config) normalize() error {
 	if c.LibraryRefreshMinutes < 1 {
 		c.LibraryRefreshMinutes = 60
 	}
+	if c.HookTimeoutSeconds < 1 {
+		c.HookTimeoutSeconds = 30
+	}
+	c.Hooks.GamingStarted = strings.TrimSpace(c.Hooks.GamingStarted)
+	c.Hooks.GameStarted = strings.TrimSpace(c.Hooks.GameStarted)
+	c.Hooks.GameStopped = strings.TrimSpace(c.Hooks.GameStopped)
+	c.Hooks.GamingStopped = strings.TrimSpace(c.Hooks.GamingStopped)
 
 	for i := range c.Games {
 		g := &c.Games[i]

@@ -45,16 +45,19 @@ func (g *Game) clone() *Game {
 
 // Status is the current detector state. It is safe to expose as JSON.
 type Status struct {
-	Gaming          bool       `json:"gaming"`
+	Gaming bool `json:"gaming"`
+	// Game is the primary active game (foreground/fullscreen first) for
+	// backwards compatibility. Use Games when more than one game is running.
 	Game            *Game      `json:"game,omitempty"`
+	Games           []*Game    `json:"games,omitempty"`
 	Since           *time.Time `json:"since,omitempty"`
 	DurationSeconds int64      `json:"durationSeconds"`
 	CheckedAt       time.Time  `json:"checkedAt"`
 }
 
-// Event is emitted whenever the tracked game changes.
+// Event is emitted whenever gaming mode or an individual game changes.
 type Event struct {
-	Event           string    `json:"event"` // game_started, game_stopped
+	Event           string    `json:"event"` // game_started, game_stopped, gaming_started, gaming_stopped
 	At              time.Time `json:"at"`
 	Game            *Game     `json:"game,omitempty"`
 	DurationSeconds int64     `json:"durationSeconds,omitempty"`
