@@ -189,9 +189,44 @@ Custom game matching rules:
 - Custom entries are checked before launcher and built-in matches, and are not
   filtered by `ignoredExecutables`.
 
+`ignoredExecutables` and `ignoredGames` are both JSON arrays of strings. Each
+entry must be its own quoted value, separated by a comma:
+
+```json
+{
+  "ignoredExecutables": [
+    "FortniteLauncher.exe",
+    "MyGameHelper.exe"
+  ],
+  "ignoredGames": [
+    "Fortnite",
+    "ELDEN RING"
+  ]
+}
+```
+
+Add these fields to your existing `gamewatch.json` object rather than replacing
+your other settings.
+
 `ignoredExecutables` is for helper processes (crash handlers, anti-cheat
-installers, launchers) that live inside a game folder. `ignoredGames` suppresses
-a whole game by name.
+installers, launchers) that live inside a game folder:
+
+- Use only the executable file name, including `.exe`; do not use a path.
+- Matching is case-insensitive and exact. `MyGameHelper.exe` does not match
+  `OtherMyGameHelper.exe`.
+- It also applies to installed-library and built-in executable matches. It does
+  not filter explicit custom games in `games`; those take precedence.
+
+`ignoredGames` suppresses a whole game by name:
+
+- Use the exact game name that gamewatch reports, not the executable name or
+  install folder.
+- Matching is case-insensitive, but the whole name must match. `Fortnite` does
+  not match `Fortnite Festival`.
+- The name comes from the launcher manifest, the built-in game list, your custom
+  game name, or the window title for unknown fullscreen apps.
+- Use `gamewatch.exe -verbose`, the JSON output, or `/status` to see the names
+  gamewatch is matching.
 
 ### Events
 
